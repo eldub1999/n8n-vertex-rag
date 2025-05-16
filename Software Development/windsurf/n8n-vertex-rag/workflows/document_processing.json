@@ -1,0 +1,294 @@
+{
+  "name": "Document Processing Pipeline with Vertex AI and Supabase",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "folder",
+        "operation": "listFiles",
+        "options": {}
+      },
+      "name": "Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        250,
+        300
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": "googleDriveOAuth2Api"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getFile",
+        "options": {}
+      },
+      "name": "Get File from Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        450,
+        300
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": "googleDriveOAuth2Api"
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "requestMethod": "POST",
+        "url": "https://us-central1-aiplatform.googleapis.com/v1/projects/your-project-id/locations/us-central1/publishers/google/models/text-bison:predict",
+        "sendHeaders": {
+          "headers": {
+            "property": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{$node[\"Google OAuth2\"].json[\"access_token\"]}}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "jsonBody": {
+          "instances": [
+            {
+              "content": "=Convert the following document into well-structured, RAG-optimized markdown. Include clear section headers, bullet points, and preserve all key information while removing any redundant or unnecessary content:\\n\\n{{$node[\\\"Get File from Google Drive\\\"].json[\\\"file\\\"]}}"
+            }
+          ],
+          "parameters": {
+            "temperature": 0.2,
+            "maxOutputTokens": 1024,
+            "topP": 0.8,
+            "topK": 40
+          }
+        },
+        "options": {}
+      },
+      "name": "Process with Vertex AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 5,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH inserted_document AS (\\n  INSERT INTO documents (original_name, processed_text, created_at, source_type)\\n  VALUES ($1, $2, NOW(), 'google_drive')\\n  RETURNING id\\n)\\nSELECT id FROM inserted_document",
+        "queryParams": "={{{ \n  \"$1\": $node[\\\"Get File from Google Drive\\\"].json[\\\"name\\\"],\\n  \"$2\": $node[\\\"Process with Vertex AI\\\"].json[\\\"predictions\\\"][0][\\\"content\\\"]\\n}}}}"
+      },
+      "name": "Store in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": "supabaseApi"
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "requestMethod": "POST",
+        "url": "https://us-central1-aiplatform.googleapis.com/v1/projects/your-project-id/locations/us-central1/publishers/google/models/textembedding-gecko:predict",
+        "sendHeaders": {
+          "headers": {
+            "property": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{$node[\\\"Google OAuth2\\\"].json[\\\"access_token\\\"]}}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "jsonBody": {
+          "instances": [
+            {
+              "content": "={{$node[\\\"Process with Vertex AI\\\"].json[\\\"predictions\\\"][0][\\\"content\\\"]}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 5,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO document_embeddings (document_id, embedding, chunk_index, metadata)\\nVALUES ($1, $2, $3, $4)",
+        "queryParams": "={{{ \n  \"$1\": $node[\\\"Store in Supabase\\\"].json[\\\"data\\\"][0][\\\"id\\\"],\\n  \"$2\": $node[\\\"Generate Embeddings\\\"].json[\\\"predictions\\\"][0][\\\"embeddings\\\"][\\\"values\\\"],\\n  \"$3\": 0,\\n  \"$4\": {\\n    \"source\\\": \\\"google_drive\\\",\\n    \"original_name\\\": $node[\\\"Get File from Google Drive\\\"].json[\\\"name\\\"],\\n    \"processed_at\\\": \\\"{{$now;}}\\\"\\n  }\\n}}}}"
+      },
+      "name": "Store Embeddings in Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": "supabaseApi"
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "grantType": "authorizationCode"
+      },
+      "name": "Google OAuth2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        250,
+        150
+      ],
+      "credentials": {
+        "httpOAuth2Api": "googleCloudOAuth2Api"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$node[\\\"Google Drive\\\"].json[\\\"files\\\"].length}}",
+              "operation": "notEqual",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Any Files?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        250,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// This function will be called for each item which\\n// passes the 'Any Files?' node.\\nconst items = [];\\n\\nfor (const file of items[0].json.files) {\\n  items.push({\\n    json: {\\n      fileId: file.id,\\n      name: file.name,\\n      mimeType: file.mimeType\\n    }\\n  });\\n}\\n\\nreturn items;"
+      },
+      "name": "Prepare Files for Processing",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        450
+      ]
+    }
+  ],
+  "connections": {
+    "Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Any Files?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Files?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Files for Processing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get File from Google Drive",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Prepare Files for Processing": {
+      "main": [
+        [
+          {
+            "node": "Get File from Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get File from Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Process with Vertex AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process with Vertex AI": {
+      "main": [
+        [
+          {
+            "node": "Store in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Supabase": {
+      "main": [
+        [
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Store Embeddings in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tag": "Document Processing"
+}
